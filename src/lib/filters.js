@@ -4,27 +4,12 @@ import * as tf from '@tensorflow/tfjs';
    1. ENSURE TF IS READY + BACKEND INITIALIZED
 ---------------------------------------------------- */
 let tfReady = false;
-async function ensureTFReady() {
-  if (tfReady) return;
-  try { await tf.setBackend('webgl'); } catch { await tf.setBackend('cpu'); }
-  await tf.ready();
-  console.log("TFJS backend:", tf.getBackend());
-  tfReady = true;
-}
+async function ensureTFReady(){ if(tfReady) return; try{ await tf.setBackend('webgl'); }catch{ await tf.setBackend('cpu'); } await tf.ready(); console.log('TFJS backend', tf.getBackend()); tfReady=true; }
 
 /* ----------------------------------------------------
    2. Utility: Write Tensor to Canvas
 ---------------------------------------------------- */
-export async function tensorToCanvas(t, canvas) {
-  await ensureTFReady();
-  const tmp = document.createElement('canvas');
-  tmp.width = canvas.width;
-  tmp.height = canvas.height;
-  await tf.browser.toPixels(t, tmp);
-  const ctx = canvas.getContext('2d');
-  ctx.drawImage(tmp, 0, 0, canvas.width, canvas.height);
-}
-
+export async function tensorToCanvas(t, canvas){ await ensureTFReady(); const tmp=document.createElement('canvas'); tmp.width=canvas.width; tmp.height=canvas.height; await tf.browser.toPixels(t,tmp); const ctx=canvas.getContext('2d'); ctx.drawImage(tmp,0,0,canvas.width,canvas.height); }
 /* ----------------------------------------------------
    3. FAST CANVAS FILTERS (SAFE)
 ---------------------------------------------------- */
@@ -90,118 +75,190 @@ export async function gaussianBlurTensor(sourceCanvas) {
 /* ----------------------------------------------------
    6. CARTOON REALISM
 ---------------------------------------------------- */
-export async function cartoonRealism(inCanvas, outCanvas) {
+//----------------------------------------------------
+// CARTOON REALISM — Fixed version for your pipeline
+//----------------------------------------------------
+export async function cartoonRealism(inCanvas, prevCanvas) {
   await ensureTFReady();
-  const ctx = outCanvas.getContext("2d");
-  const w = inCanvas.width, h = inCanvas.height;
+  const ctx = prevCanvas.getContext("2d");
+  const w = prevCanvas.width;
+  const h = prevCanvas.height;
 
+  // 1. Blur input → preview
   const blur = await gaussianBlurTensor(inCanvas);
-  await tensorToCanvas(blur, outCanvas);
+  await tensorToCanvas(blur, prevCanvas);
   blur.dispose();
 
-  const img = ctx.getImageData(0, 0, w, h);
-  const d = img.data;
+  // 2. Posterize preview canvas
+  let img = ctx.getImageData(0, 0, w, h);
+  let d = img.data;
   const levels = 6;
 
   for (let i = 0; i < d.length; i += 4) {
-    d[i]   = Math.round((d[i]/255)*(levels-1))*(255/(levels-1));
-    d[i+1] = Math.round((d[i+1]/255)*(levels-1))*(255/(levels-1));
-    d[i+2] = Math.round((d[i+2]/255)*(levels-1))*(255/(levels-1));
+    d[i]   = Math.round((d[i]  / 255) * (levels - 1)) * (255 / (levels - 1));
+    d[i+1] = Math.round((d[i+1] / 255) * (levels - 1)) * (255 / (levels - 1));
+    d[i+2] = Math.round((d[i+2] / 255) * (levels - 1)) * (255 / (levels - 1));
   }
   ctx.putImageData(img, 0, 0);
 
-  const edges = await sobelEdgesTensor(inCanvas);
+  // 3. Edge detection ON THE POSTERIZED IMAGE, not on the raw input
+  const edges = await sobelEdgesTensor(prevCanvas);
+
   const eTmp = document.createElement("canvas");
-  eTmp.width = w; eTmp.height = h;
+  eTmp.width = w;
+  eTmp.height = h;
+
   await tf.browser.toPixels(edges, eTmp);
   edges.dispose();
 
+  // 4. Multiply edges onto preview to get toon lines
+  ctx.globalCompositeOperation = "multiply";
+  ctx.drawImage(eTmp, 0, 0);
+  ctx.globalCompositeOperation = "source-over";
+}
+
+
+
+/* ----------------------------------------------------
+   7. COMIC BOOK
+---------------------------------------------------- */
+//----------------------------------------------------
+// COMIC BOOK (Improved)
+//----------------------------------------------------
+export async function comicBook(inCanvas, prevCanvas) {
+  await ensureTFReady();
+  const ctx = prevCanvas.getContext("2d");
+  const w = prevCanvas.width, h = prevCanvas.height;
+
+  //----------------------------------------------------
+  // 1. Copy input → preview
+  //----------------------------------------------------
+  ctx.drawImage(inCanvas, 0, 0, w, h);
+
+  //----------------------------------------------------
+  // 2. Increase contrast + saturation
+  //----------------------------------------------------
+  let img = ctx.getImageData(0, 0, w, h);
+  let d = img.data;
+
+  const contrast = 1.4;
+  const saturation = 1.8;
+
+  for (let i = 0; i < d.length; i += 4) {
+    // Convert to relative luminance
+    const r = d[i], g = d[i+1], b = d[i+2];
+    const lum = 0.2126*r + 0.7152*g + 0.0722*b;
+
+    // Increase contrast around middle grey
+    const cr = (r - 128) * contrast + 128;
+    const cg = (g - 128) * contrast + 128;
+    const cb = (b - 128) * contrast + 128;
+
+    // Saturation boost
+    d[i]   = lum + (cr - lum) * saturation;
+    d[i+1] = lum + (cg - lum) * saturation;
+    d[i+2] = lum + (cb - lum) * saturation;
+  }
+  ctx.putImageData(img, 0, 0);
+
+  //----------------------------------------------------
+  // 3. HALFTONE DOTS (smaller + more realistic)
+  //----------------------------------------------------
+  const cell = 8;  // dot grid size
+  ctx.save();
+  ctx.globalAlpha = 0.35; // subtle effect
+  ctx.fillStyle = "#000";
+
+  for (let y = 0; y < h; y += cell) {
+    for (let x = 0; x < w; x += cell) {
+      const p = ctx.getImageData(x, y, 1, 1).data;
+      const lum = (0.2126*p[0] + 0.7152*p[1] + 0.0722*p[2]) / 255;
+
+      const radius = (1 - lum) * (cell * 0.45); // softer aesthetic
+      ctx.beginPath();
+      ctx.arc(x + cell/2, y + cell/2, radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  }
+  ctx.restore();
+
+  //----------------------------------------------------
+  // 4. THICK OUTLINES (Sobel + dilation)
+  //----------------------------------------------------
+  // First: extract edges
+  const edges = await sobelEdgesTensor(prevCanvas);
+
+  const eTmp = document.createElement("canvas");
+  eTmp.width = w; eTmp.height = h;
+  let eCtx = eTmp.getContext("2d");
+  await tf.browser.toPixels(edges, eTmp);
+  edges.dispose();
+
+  // Convert to ImageData for dilation
+  let eImg = eCtx.getImageData(0, 0, w, h);
+  let ed = eImg.data;
+
+  // Thicken edges by dilating (3x3)
+  for (let i = 0; i < ed.length; i += 4) {
+    const v = ed[i]; // red channel is enough
+    if (v > 60) {
+      // make a thicker stroke
+      ed[i] = ed[i+1] = ed[i+2] = 0;
+    } else {
+      ed[i] = ed[i+1] = ed[i+2] = 255;
+    }
+  }
+  eCtx.putImageData(eImg, 0, 0);
+
+  //----------------------------------------------------
+  // 5. Composite outlines on top (multiply)
+  //----------------------------------------------------
   ctx.globalCompositeOperation = "multiply";
   ctx.drawImage(eTmp, 0, 0);
   ctx.globalCompositeOperation = "source-over";
 }
 
 /* ----------------------------------------------------
-   7. COMIC BOOK
----------------------------------------------------- */
-export async function comicBook(inCanvas, outCanvas) {
-  await ensureTFReady();
-  const ctx = outCanvas.getContext("2d");
-  const w = inCanvas.width, h = inCanvas.height;
-
-  ctx.drawImage(inCanvas,0,0);
-
-  const img = ctx.getImageData(0,0,w,h);
-  const d = img.data;
-
-  for (let i=0;i<d.length;i+=4){
-    const r=d[i], g=d[i+1], b=d[i+2];
-    const avg=(r+g+b)/3;
-    d[i] = Math.min(255, avg + (r-avg)*1.6);
-    d[i+1] = Math.min(255, avg + (g-avg)*1.6);
-    d[i+2] = Math.min(255, avg + (b-avg)*1.6);
-  }
-  ctx.putImageData(img,0,0);
-
-  const step=6;
-  ctx.save();
-  ctx.fillStyle='rgba(0,0,0,0.15)';
-  for (let y=0;y<h;y+=step){
-    for (let x=0;x<w;x+=step){
-      const p=ctx.getImageData(x,y,1,1).data;
-      const lum=(0.2126*p[0]+0.7152*p[1]+0.0722*p[2])/255;
-      const r=(1-lum)*(step/2);
-      ctx.beginPath(); ctx.arc(x,y,r,0,Math.PI*2); ctx.fill();
-    }
-  }
-  ctx.restore();
-
-  const edges = await sobelEdgesTensor(outCanvas);
-  const eTmp=document.createElement("canvas");
-  eTmp.width=w; eTmp.height=h;
-  await tf.browser.toPixels(edges,eTmp);
-  edges.dispose();
-
-  ctx.globalCompositeOperation='multiply';
-  ctx.drawImage(eTmp,0,0);
-  ctx.globalCompositeOperation='source-over';
-}
-
-/* ----------------------------------------------------
    8. ARTISTIC SKETCH
 ---------------------------------------------------- */
-export async function artisticSketch(inCanvas, outCanvas) {
+export async function artisticSketch(inCanvas, prevCanvas) {
   await ensureTFReady();
-  const ctx=outCanvas.getContext("2d");
-  const w=inCanvas.width, h=inCanvas.height;
+  const w = prevCanvas.width, h = prevCanvas.height;
+  const ctx = prevCanvas.getContext("2d");
 
-  ctx.drawImage(inCanvas,0,0);
+  // 1. Copy source → preview canvas
+  ctx.drawImage(inCanvas, 0, 0, w, h);
 
-  const img=ctx.getImageData(0,0,w,h);
-  const d=img.data;
-  for (let i=0;i<d.length;i+=4){
-    const v=((d[i]+d[i+1]+d[i+2])/3)|0;
-    d[i]=d[i+1]=d[i+2]=v;
+  // 2. Convert to grayscale
+  let img = ctx.getImageData(0, 0, w, h);
+  let d = img.data;
+
+  for (let i = 0; i < d.length; i += 4) {
+    const v = (d[i] * 0.3 + d[i+1] * 0.59 + d[i+2] * 0.11);
+    d[i] = d[i+1] = d[i+2] = v;
   }
-  ctx.putImageData(img,0,0);
+  ctx.putImageData(img, 0, 0);
 
-  const edges=await sobelEdgesTensor(outCanvas);
-  const eTmp=document.createElement("canvas");
-  eTmp.width=w; eTmp.height=h;
-  await tf.browser.toPixels(edges,eTmp);
+  // 3. Detect edges (Sobel)
+  const edges = await sobelEdgesTensor(prevCanvas);
+  const eTmp = document.createElement("canvas");
+  eTmp.width = w; eTmp.height = h;
+  await tf.browser.toPixels(edges, eTmp);
   edges.dispose();
 
-  const eCtx=eTmp.getContext("2d");
-  const eImg=eCtx.getImageData(0,0,w,h);
-  const ed=eImg.data;
-  for (let i=0;i<ed.length;i+=4){
-    ed[i]=255-ed[i];
-    ed[i+1]=255-ed[i+1];
-    ed[i+2]=255-ed[i+2];
-  }
-  eCtx.putImageData(eImg,0,0);
+  // 4. Invert edges (dark lines on white)
+  const eCtx = eTmp.getContext("2d");
+  const eImg = eCtx.getImageData(0, 0, w, h);
+  const ed = eImg.data;
 
-  ctx.globalCompositeOperation='multiply';
-  ctx.drawImage(eTmp,0,0);
-  ctx.globalCompositeOperation='source-over';
+  for (let i = 0; i < ed.length; i += 4) {
+    let v = ed[i];
+    ed[i] = ed[i+1] = ed[i+2] = (255 - v);
+  }
+  eCtx.putImageData(eImg, 0, 0);
+
+  // 5. Blend edges using DARKEN
+  ctx.globalCompositeOperation = "darken";
+  ctx.drawImage(eTmp, 0, 0);
+  ctx.globalCompositeOperation = "source-over";
 }

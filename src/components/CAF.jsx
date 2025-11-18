@@ -1,5 +1,4 @@
 import React, { useEffect, useRef, useState } from 'react';
-import * as tf from '@tensorflow/tfjs';
 import { grayscale, invert, cartoonRealism, comicBook, artisticSketch } from '../lib/filters';
 
 export default function CAF(){
@@ -95,14 +94,26 @@ export default function CAF(){
       prevCtx.drawImage(inC, 0, 0, prevC.width, prevC.height);
 
       // apply selected filter onto preview
-     try {
-  if(filter==='grayscale'){ grayscale(inC); outCtx.clearRect(0,0,outC.width,outC.height); outCtx.drawImage(inC,0,0,outC.width,outC.height); } else if(filter==='invert'){ invert(inC); outCtx.clearRect(0,0,outC.width,outC.height); outCtx.drawImage(inC,0,0,outC.width,outC.height); }
-  else if (filter === 'cartoon') await cartoonRealism(inC, prevC);
-  else if (filter === 'comic') await comicBook(inC, prevC);
-  else if (filter === 'sketch') await artisticSketch(inC, prevC);
+try {
+  if(filter === 'grayscale') {
+    grayscale(prevC);
+  }
+  else if(filter === 'invert') {
+    invert(prevC);
+  }
+  else if (filter === 'cartoon') {
+    await cartoonRealism(inC, prevC);
+  }
+  else if (filter === 'comic') {
+    await comicBook(inC, prevC);
+  }
+  else if (filter === 'sketch') {
+    await artisticSketch(inC, prevC);
+  }
 } catch (err) {
   console.warn("Filter failed:", filter, err);
 }
+
 
       // none -> leave as is
 
